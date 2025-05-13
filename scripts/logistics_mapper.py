@@ -34,21 +34,25 @@ class HVDCLogisticsMapper:
         """현재 프로세스 단계 결정 (1~5)"""
         if pd.notna(row["MOSB"]):
             return 5  # 현장 수령 완료
-        if pd.notna(row["DSV Out"]):
+        if pd.notna(row["DSV\n Outdoor"]):
             return 4  # 운송 중
-        if pd.notna(row["Customs Close"]):
+        if pd.notna(row["Customs\n Start"]):
             return 3  # 통관 완료, 창고 입고 단계
         if pd.notna(row["ATA"]):
             return 2  # 입항 후 통관 진행
         return 1  # 해외 조달중 (UAE 도착 전)
     
     def detect_site(self, row):
-        """현장(SITE) 감지 및 FLOW 분류"""
+        """현장(SITE) 감지 및 FLOW 분류 - MIR·SHU=육상, AGI·DAS=섬, 미식별시 UNK"""
         site_cols = ["MIR", "SHU", "DAS", "AGI"]
         for col in site_cols:
             if col in row and pd.notna(row[col]):
-                return col
-        return np.nan
+                if col in ["MIR", "SHU"]:
+                    return col  # 육상
+                elif col in ["AGI", "DAS"]:
+                    return col  # 섬
+        self.logger.warning(f"SITE 미식별: {row.get('NO.', '')}")
+        return "UNK"
     
     def refined_hvdc_step(self, desc: str) -> int:
         """정교화된 HVDC 공정단계 분류 함수 (v3)"""
@@ -210,14 +214,14 @@ class HVDCLogisticsMapper:
                 # 5. MOSB_Pred 시트
                 mosb_pred = df[df['STEP_NO'] < 5].copy()
                 mosb_pred['예상_MOSB'] = mosb_pred.apply(
-                    lambda x: x['DSV Out'] + timedelta(days=5) if pd.notna(x['DSV Out'])
-                    else x['Customs Close'] + timedelta(days=7) if pd.notna(x['Customs Close'])
+                    lambda x: x['DSV\n Outdoor'] + timedelta(days=5) if pd.notna(x['DSV\n Outdoor'])
+                    else x['Customs\n Start'] + timedelta(days=7) if pd.notna(x['Customs\n Start'])
                     else x['ATA'] + timedelta(days=10) if pd.notna(x['ATA'])
                     else None,
                     axis=1
                 )
                 mosb_pred = mosb_pred[['NO.', 'VENDOR', 'SUB DESCRIPTION', 'STEP_NAME', 
-                                    'SITE', 'FLOW', 'DSV Out', '예상_MOSB']]
+                                    'SITE', 'FLOW', 'DSV\n Outdoor', '예상_MOSB']]
                 mosb_pred.to_excel(writer, sheet_name='MOSB_Pred', index=False)
                 
                 # 6. Dashboard 시트
@@ -277,7 +281,7 @@ class HVDCLogisticsMapper:
         
         try:
             # 1. 날짜 컬럼 변환
-            date_cols = ['ATA', 'Customs Close', 'DSV Out', 'MOSB']
+            date_cols = ['ATA', 'Customs\n Start', 'DSV\n Outdoor', 'MOSB', 'AAA Storage', 'ZENER (WH)', 'Hauler DG Storage', 'Vijay Tanks']
             for col in date_cols:
                 if col in df.columns:
                     df[col] = pd.to_datetime(df[col], errors='coerce')
@@ -314,10 +318,13 @@ class HVDCLogisticsMapper:
             })
             
             # 5. 리드타임 계산
-            df['입항→통관'] = (df['Customs Close'] - df['ATA']).dt.days
-            df['통관→창고출고'] = (df['DSV Out'] - df['Customs Close']).dt.days
-            df['창고출고→현장도착'] = (df['MOSB'] - df['DSV Out']).dt.days
+            df['입항→통관'] = (df['Customs\n Start'] - df['ATA']).dt.days
+            df['통관→창고출고'] = (df['DSV\n Outdoor'] - df['Customs\n Start']).dt.days
+            df['창고출고→현장도착'] = (df['MOSB'] - df['DSV\n Outdoor']).dt.days
             df['전체 리드타임'] = (df['MOSB'] - df['ATA']).dt.days
+            # 섬 운송(SITE=AGI/DAS) +5일 보정
+            island_mask = df['SITE'].isin(['AGI', 'DAS'])
+            df.loc[island_mask, '입항→통관'] = df.loc[island_mask, '입항→통관'] + 5
             
             # 6. 컨테이너 데이터 처리
             if '20ft Q\'TY' in df.columns and '40ft Q\'TY' in df.columns:

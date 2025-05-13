@@ -2,6 +2,7 @@ import pandas as pd
 from pathlib import Path
 import numpy as np
 import xlsxwriter
+import matplotlib.pyplot as plt
 
 # === 0. Load workbook ===
 src_path = Path("output/logistics_mapping.xlsx")
@@ -233,6 +234,52 @@ for i in range(3):
 
 dash.insert_chart(positions[4], chart5, {"x_offset": 5, "y_offset": 5})
 
-workbook.close()
+def create_route_delay_sheet(writer, df):
+    # SITE별 지연비율 요약
+    if 'DELAY_FLAG' in df.columns:
+        summary = df.groupby('SITE').agg(
+            delay_count=('DELAY_FLAG', 'sum'),
+            total=('NO.', 'count'),
+            delay_ratio=('DELAY_FLAG', 'mean')
+        ).reset_index()
+        summary.to_excel(writer, sheet_name='Route_Delay', index=False)
+        # 차트 생성 (matplotlib 사용)
+        plt.figure(figsize=(6,4))
+        plt.bar(summary['SITE'], summary['delay_ratio']*100)
+        plt.ylabel('지연비율(%)')
+        plt.title('SITE별 지연비율')
+        plt.tight_layout()
+        plt.savefig('output/route_delay_bar.png')
+        plt.close()
+        # Box-plot (지연일수)
+        if '입항→통관' in df.columns:
+            plt.figure(figsize=(6,4))
+            df.boxplot(column='입항→통관', by='SITE')
+            plt.title('SITE별 입항→통관 리드타임 분포')
+            plt.suptitle('')
+            plt.ylabel('일수')
+            plt.tight_layout()
+            plt.savefig('output/route_delay_boxplot.png')
+            plt.close()
+
+def write_model_cv_sheet(wb, cv_df):
+    ws = wb.add_worksheet("Model_CV")
+    for r_idx, row in enumerate(cv_df.itertuples(index=False), 1):
+        for c_idx, value in enumerate(row, 1):
+            ws.write(r_idx, c_idx, value)
+    # 조건부 서식: RMSE 최소 셀 초록, 최대 빨강
+    rmse_col = cv_df.columns.get_loc("rmse") + 1 if "rmse" in cv_df.columns else None
+    if rmse_col:
+        ws.conditional_format(1, rmse_col, len(cv_df), rmse_col, {
+            'type': '3_color_scale',
+            'min_color': '#63BE7B',  # green
+            'mid_color': '#FFEB84',  # yellow
+            'max_color': '#F8696B',  # red
+        })
+
+with pd.ExcelWriter("output/HVDC_KPI_Dashboard.xlsx", engine="xlsxwriter") as writer:
+    # ... 기존 시트 저장 ...
+    create_route_delay_sheet(writer, step_flow)
+    write_model_cv_sheet(workbook, cv_df)
 
 print(f"[Download KPI Dashboard](sandbox:{out_path})") 
