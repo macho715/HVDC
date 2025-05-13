@@ -1,0 +1,3 @@
+Private Sub Workbook_Open()
+    mInit.Auto_Open
+End Sub
